@@ -3347,6 +3347,7 @@ int git_index_read_tree(git_index *index, const git_tree *tree)
 	git_index_entry *e;
 	git_sparse sparse;
 	int sparse_checkout_enabled = false;
+  git_repository *repo = git_index_owner(index);
 
 	git_vector_set_cmp(&entries, index->entries._cmp); /* match sort */
 
