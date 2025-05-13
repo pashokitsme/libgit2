@@ -30,15 +30,15 @@ typedef enum {
 } git_diff_origin_t;
 
 struct git_diff {
-	git_refcount     rc;
+	git_refcount      rc;
 	git_repository   *repo;
-	git_attr_session attrsession;
+	git_attr_session  attrsession;
 	git_diff_origin_t type;
-	git_diff_options opts;
-	git_vector       deltas;    /* vector of git_diff_delta */
+	git_diff_options  opts;
+	git_vector        deltas;    /* vector of git_diff_delta */
 	git_pool pool;
-	git_iterator_t old_src;
-	git_iterator_t new_src;
+	git_iterator_t    old_src;
+	git_iterator_t    new_src;
 	git_diff_perfdata perf;
 
 	int (*strcomp)(const char *, const char *);
@@ -63,5 +63,15 @@ extern int git_diff_delta__casecmp(const void *a, const void *b);
 
 extern int git_diff__entry_cmp(const void *a, const void *b);
 extern int git_diff__entry_icmp(const void *a, const void *b);
+
+#ifndef GIT_EXPERIMENTAL_SHA256
+
+int git_diff_from_buffer_ext(
+	git_diff **out,
+	const char *content,
+	size_t content_len,
+	git_diff_parse_options *opts);
+
+#endif
 
 #endif

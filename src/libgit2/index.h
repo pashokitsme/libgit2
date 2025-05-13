@@ -12,13 +12,17 @@
 #include "futils.h"
 #include "filebuf.h"
 #include "vector.h"
-#include "idxmap.h"
 #include "tree-cache.h"
+#include "index_map.h"
 #include "git2/odb.h"
 #include "git2/index.h"
 
 #define GIT_INDEX_FILE "index"
 #define GIT_INDEX_FILE_MODE 0666
+
+/* Helper to create index options based on repository options */
+#define GIT_INDEX_OPTIONS_FOR_REPO(r) \
+	{ GIT_INDEX_OPTIONS_VERSION, r ? r->oid_type : 0 }
 
 extern bool git_index__enforce_unsaved_safety;
 
@@ -27,13 +31,15 @@ struct git_index {
 
 	char *index_file_path;
 	git_futils_filestamp stamp;
-	unsigned char checksum[GIT_HASH_SHA1_SIZE];
+	unsigned char checksum[GIT_HASH_MAX_SIZE];
 
 	git_vector entries;
-	git_idxmap *entries_map;
+	git_index_entrymap entries_map;
 
 	git_vector deleted; /* deleted entries if readers > 0 */
 	git_atomic32 readers; /* number of active iterators */
+
+	git_oid_t oid_type;
 
 	unsigned int on_disk:1;
 	unsigned int ignore_case:1;
@@ -83,7 +89,7 @@ GIT_INLINE(bool) git_index_time_eq(const git_index_time *one, const git_index_ti
 	if (one->seconds != two->seconds)
 		return false;
 
-#ifdef GIT_USE_NSEC
+#ifdef GIT_NSEC
 	if (one->nanoseconds != two->nanoseconds)
 		return false;
 #endif
@@ -104,7 +110,7 @@ GIT_INLINE(bool) git_index_entry_newer_than_index(
 		return false;
 
 	/* If the timestamp is the same or newer than the index, it's racy */
-#if defined(GIT_USE_NSEC)
+#if defined(GIT_NSEC)
 	if ((int32_t)index->stamp.mtime.tv_sec < entry->mtime.seconds)
 		return true;
 	else if ((int32_t)index->stamp.mtime.tv_sec > entry->mtime.seconds)
@@ -190,5 +196,20 @@ extern int git_indexwriter_commit(git_indexwriter *writer);
  * locked and freeing any data structures.
  */
 extern void git_indexwriter_cleanup(git_indexwriter *writer);
+
+/* SHA256 support */
+
+#ifndef GIT_EXPERIMENTAL_SHA256
+
+int git_index_open_ext(
+	git_index **index_out,
+	const char *index_path,
+	const git_index_options *opts);
+
+GIT_EXTERN(int) git_index_new_ext(
+	git_index **index_out,
+	const git_index_options *opts);
+
+#endif
 
 #endif

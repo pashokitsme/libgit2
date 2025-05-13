@@ -279,6 +279,7 @@ void test_index_racy__read_index_smudges(void)
 {
 	git_index *index, *newindex;
 	const git_index_entry *entry;
+	git_index_options index_opts = GIT_INDEX_OPTIONS_INIT;
 
 	/* if we are reading an index into our new index, ensure that any
 	 * racy entries in the index that we're reading are smudged so that
@@ -287,7 +288,7 @@ void test_index_racy__read_index_smudges(void)
 	setup_race();
 
 	cl_git_pass(git_repository_index(&index, g_repo));
-	cl_git_pass(git_index_new(&newindex));
+	cl_git_pass(git_index_new_ext(&newindex, &index_opts));
 	cl_git_pass(git_index_read_index(newindex, index));
 
 	cl_assert(entry = git_index_get_bypath(newindex, "A", 0));

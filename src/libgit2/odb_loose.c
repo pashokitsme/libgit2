@@ -243,7 +243,7 @@ static int read_loose_packlike(git_rawobj *out, git_str *obj)
 	if ((error = parse_header_packlike(&hdr, &head_len, obj_data, obj_len)) < 0)
 		goto done;
 
-	if (!git_object_typeisloose(hdr.type) || head_len > obj_len) {
+	if (!git_object_type_is_valid(hdr.type) || head_len > obj_len) {
 		git_error_set(GIT_ERROR_ODB, "failed to inflate loose object");
 		error = -1;
 		goto done;
@@ -296,7 +296,7 @@ static int read_loose_standard(git_rawobj *out, git_str *obj)
 		(error = parse_header(&hdr, &head_len, head, decompressed)) < 0)
 		goto done;
 
-	if (!git_object_typeisloose(hdr.type)) {
+	if (!git_object_type_is_valid(hdr.type)) {
 		git_error_set(GIT_ERROR_ODB, "failed to inflate disk object");
 		error = -1;
 		goto done;
@@ -436,7 +436,7 @@ static int read_header_loose(git_rawobj *out, git_str *loc)
 	else
 		error = read_header_loose_standard(out, obj, (size_t)obj_len);
 
-	if (!error && !git_object_typeisloose(out->type)) {
+	if (!error && !git_object_type_is_valid(out->type)) {
 		git_error_set(GIT_ERROR_ZLIB, "failed to read loose object header");
 		error = -1;
 		goto done;
@@ -552,7 +552,10 @@ static int locate_object_short_oid(
 		return git_odb__error_ambiguous("multiple matches in loose objects");
 
 	/* Convert obtained hex formatted oid to raw */
-	error = git_oid__fromstr(res_oid, (char *)state.res_oid, backend->options.oid_type);
+	error = git_oid_from_prefix(res_oid, (char *)state.res_oid,
+		git_oid_hexsize(backend->options.oid_type),
+		backend->options.oid_type);
+
 	if (error)
 		return error;
 
@@ -951,7 +954,7 @@ static int loose_backend__readstream_packlike(
 	if ((error = parse_header_packlike(hdr, &head_len, data, data_len)) < 0)
 		return error;
 
-	if (!git_object_typeisloose(hdr->type)) {
+	if (!git_object_type_is_valid(hdr->type)) {
 		git_error_set(GIT_ERROR_ODB, "failed to inflate loose object");
 		return -1;
 	}
@@ -983,7 +986,7 @@ static int loose_backend__readstream_standard(
 		(error = parse_header(hdr, &head_len, head, init)) < 0)
 		return error;
 
-	if (!git_object_typeisloose(hdr->type)) {
+	if (!git_object_type_is_valid(hdr->type)) {
 		git_error_set(GIT_ERROR_ODB, "failed to inflate disk object");
 		return -1;
 	}
@@ -1204,3 +1207,37 @@ int git_odb__backend_loose(
 	*backend_out = (git_odb_backend *)backend;
 	return 0;
 }
+
+
+#ifdef GIT_EXPERIMENTAL_SHA256
+int git_odb_backend_loose(
+	git_odb_backend **backend_out,
+	const char *objects_dir,
+	git_odb_backend_loose_options *opts)
+{
+	return git_odb__backend_loose(backend_out, objects_dir, opts);
+}
+#else
+int git_odb_backend_loose(
+	git_odb_backend **backend_out,
+	const char *objects_dir,
+	int compression_level,
+	int do_fsync,
+	unsigned int dir_mode,
+	unsigned int file_mode)
+{
+	git_odb_backend_loose_flag_t flags = 0;
+	git_odb_backend_loose_options opts = GIT_ODB_BACKEND_LOOSE_OPTIONS_INIT;
+
+	if (do_fsync)
+		flags |= GIT_ODB_BACKEND_LOOSE_FSYNC;
+
+	opts.flags = flags;
+	opts.compression_level = compression_level;
+	opts.dir_mode = dir_mode;
+	opts.file_mode = file_mode;
+	opts.oid_type = GIT_OID_DEFAULT;
+
+	return git_odb__backend_loose(backend_out, objects_dir, &opts);
+}
+#endif

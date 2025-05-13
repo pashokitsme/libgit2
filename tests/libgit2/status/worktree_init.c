@@ -7,6 +7,7 @@
 #include "posix.h"
 #include "util.h"
 #include "path.h"
+#include "index.h"
 
 static void cleanup_new_repo(void *path)
 {
@@ -283,7 +284,7 @@ void test_status_worktree_init__disable_pathspec_match(void)
 {
 	git_repository *repo;
 	git_status_options opts = GIT_STATUS_OPTIONS_INIT;
-	char *file_with_bracket = "LICENSE[1].md", 
+	char *file_with_bracket = "LICENSE[1].md",
 		*imaginary_file_with_bracket = "LICENSE[1-2].md";
 
 	cl_set_cleanup(&cleanup_new_repo, "pathspec");
@@ -291,18 +292,18 @@ void test_status_worktree_init__disable_pathspec_match(void)
 	cl_git_mkfile("pathspec/LICENSE[1].md", "screaming bracket\n");
 	cl_git_mkfile("pathspec/LICENSE1.md", "no bracket\n");
 
-	opts.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | 
+	opts.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED |
 		GIT_STATUS_OPT_DISABLE_PATHSPEC_MATCH;
 	opts.pathspec.count = 1;
 	opts.pathspec.strings = &file_with_bracket;
 
 	cl_git_pass(
-		git_status_foreach_ext(repo, &opts, cb_status__expected_path, 
+		git_status_foreach_ext(repo, &opts, cb_status__expected_path,
 		file_with_bracket)
 	);
 
 	/* Test passing a pathspec matching files in the workdir. */
-	/* Must not match because pathspecs are disabled. */ 
+	/* Must not match because pathspecs are disabled. */
 	opts.pathspec.strings = &imaginary_file_with_bracket;
 	cl_git_pass(
 		git_status_foreach_ext(repo, &opts, cb_status__expected_path, NULL)

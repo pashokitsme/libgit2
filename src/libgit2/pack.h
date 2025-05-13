@@ -16,10 +16,9 @@
 #include "map.h"
 #include "mwindow.h"
 #include "odb.h"
-#include "offmap.h"
-#include "oidmap.h"
 #include "zstream.h"
 #include "oid.h"
+#include "hashmap_oid.h"
 
 /**
  * Function type for callbacks from git_pack_foreach_entry_offset.
@@ -34,6 +33,10 @@ typedef int git_pack_foreach_entry_offset_cb(
 #define PACK_SIGNATURE 0x5041434b	/* "PACK" */
 #define PACK_VERSION 2
 #define pack_version_ok(v) ((v) == htonl(2))
+
+#define GIT_PACKFILE_OFS_DELTA 6
+#define GIT_PACKFILE_REF_DELTA 7
+
 struct git_pack_header {
 	uint32_t hdr_signature;
 	uint32_t hdr_version;
@@ -83,12 +86,23 @@ typedef git_array_t(struct pack_chain_elem) git_dependency_chain;
 #define GIT_PACK_CACHE_MEMORY_LIMIT 16 * 1024 * 1024
 #define GIT_PACK_CACHE_SIZE_LIMIT 1024 * 1024 /* don't bother caching anything over 1MB */
 
+struct git_pack_entry {
+	off64_t offset;
+	git_oid id;
+	struct git_pack_file *p;
+};
+
+GIT_HASHMAP_STRUCT(git_pack_offsetmap, off64_t, git_pack_cache_entry *);
+
+GIT_HASHMAP_OID_STRUCT(git_pack_oidmap, struct git_pack_entry *);
+GIT_HASHMAP_OID_PROTOTYPES(git_pack_oidmap, struct git_pack_entry *);
+
 typedef struct {
 	size_t memory_used;
 	size_t memory_limit;
 	size_t use_ctr;
 	git_mutex lock;
-	git_offmap *entries;
+	git_pack_offsetmap entries;
 } git_pack_cache;
 
 struct git_pack_file {
@@ -99,13 +113,20 @@ struct git_pack_file {
 
 	uint32_t num_objects;
 	uint32_t num_bad_objects;
-	git_oid *bad_object_sha1; /* array of git_oid */
+	git_oid *bad_object_ids; /* array of git_oid */
+
+	git_oid_t oid_type;
+	unsigned oid_hexsize:7,
+	         oid_size:6,
+	         pack_local:1,
+	         pack_keep:1,
+		 has_cache:1;
 
 	int index_version;
 	git_time_t mtime;
-	unsigned pack_local:1, pack_keep:1, has_cache:1;
-	git_oidmap *idx_cache;
-	unsigned char **oids;
+
+	git_pack_oidmap idx_cache;
+	unsigned char **ids;
 
 	git_pack_cache bases; /* delta base cache */
 
@@ -116,23 +137,22 @@ struct git_pack_file {
 };
 
 /**
- * Return the position where an OID (or a prefix) would be inserted within the
- * OID Lookup Table of an .idx file. This performs binary search between the lo
- * and hi indices.
+ * Return the position where an OID (or a prefix) would be inserted within
+ * the OID Lookup Table of an .idx file. This performs binary search
+ * between the lo and hi indices.
  *
- * The stride parameter is provided because .idx files version 1 store the OIDs
- * interleaved with the 4-byte file offsets of the objects within the .pack
- * file (stride = 24), whereas files with version 2 store them in a contiguous
- * flat array (stride = 20).
+ * The stride parameter is provided because .idx files version 1 store the
+ * OIDs interleaved with the 4-byte file offsets of the objects within the
+ * .pack file (stride = oid_size + 4), whereas files with version 2 store
+ * them in a contiguous flat array (stride = oid_size).
  */
-int git_pack__lookup_sha1(const void *oid_lookup_table, size_t stride, unsigned lo,
-		unsigned hi, const unsigned char *oid_prefix);
-
-struct git_pack_entry {
-	off64_t offset;
-	git_oid sha1;
-	struct git_pack_file *p;
-};
+int git_pack__lookup_id(
+	const void *id_lookup_table,
+	size_t stride,
+	unsigned lo,
+	unsigned hi,
+	const unsigned char *id_prefix,
+	const git_oid_t oid_type);
 
 typedef struct git_packfile_stream {
 	off64_t curpos;
@@ -174,12 +194,15 @@ int get_delta_base(
 		off64_t delta_obj_offset);
 
 void git_packfile_free(struct git_pack_file *p, bool unlink_packfile);
-int git_packfile_alloc(struct git_pack_file **pack_out, const char *path);
+int git_packfile_alloc(
+	struct git_pack_file **pack_out,
+	const char *path,
+	git_oid_t oid_type);
 
 int git_pack_entry_find(
 		struct git_pack_entry *e,
 		struct git_pack_file *p,
-		const git_oid *short_oid,
+		const git_oid *short_id,
 		size_t len);
 int git_pack_foreach_entry(
 		struct git_pack_file *p,

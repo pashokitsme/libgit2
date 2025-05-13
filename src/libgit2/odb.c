@@ -116,7 +116,7 @@ int git_odb__hashobj(git_oid *id, git_rawobj *obj, git_oid_t oid_type)
 	GIT_ASSERT_ARG(id);
 	GIT_ASSERT_ARG(obj);
 
-	if (!git_object_typeisloose(obj->type)) {
+	if (!git_object_type_is_valid(obj->type)) {
 		git_error_set(GIT_ERROR_INVALID, "invalid object type");
 		return -1;
 	}
@@ -219,7 +219,7 @@ int git_odb__hashfd(
 	ssize_t read_len = 0;
 	int error = 0;
 
-	if (!git_object_typeisloose(object_type)) {
+	if (!git_object_type_is_valid(object_type)) {
 		git_error_set(GIT_ERROR_INVALID, "invalid object type for hash");
 		return -1;
 	}
@@ -536,9 +536,14 @@ static void normalize_options(
 		opts->oid_type = GIT_OID_DEFAULT;
 }
 
-int git_odb__new(git_odb **out, const git_odb_options *opts)
+int git_odb_new_ext(git_odb **out, const git_odb_options *opts)
 {
-	git_odb *db = git__calloc(1, sizeof(*db));
+	git_odb *db;
+
+	GIT_ASSERT_ARG(out);
+	GIT_ERROR_CHECK_VERSION(opts, GIT_ODB_OPTIONS_VERSION, "git_odb_options");
+
+	db = git__calloc(1, sizeof(*db));
 	GIT_ERROR_CHECK_ALLOC(db);
 
 	normalize_options(&db->options, opts);
@@ -564,17 +569,10 @@ int git_odb__new(git_odb **out, const git_odb_options *opts)
 	return 0;
 }
 
-#ifdef GIT_EXPERIMENTAL_SHA256
-int git_odb_new(git_odb **out, const git_odb_options *opts)
-{
-	return git_odb__new(out, opts);
-}
-#else
 int git_odb_new(git_odb **out)
 {
-	return git_odb__new(out, NULL);
+	return git_odb_new_ext(out, NULL);
 }
-#endif
 
 static int add_backend_internal(
 	git_odb *odb, git_odb_backend *backend,
@@ -684,6 +682,7 @@ int git_odb__add_default_backends(
 	ino_t inode;
 	git_odb_backend *loose, *packed;
 	git_odb_backend_loose_options loose_opts = GIT_ODB_BACKEND_LOOSE_OPTIONS_INIT;
+	git_odb_backend_pack_options pack_opts = GIT_ODB_BACKEND_PACK_OPTIONS_INIT;
 
 	/* TODO: inodes are not really relevant on Win32, so we need to find
 	 * a cross-platform workaround for this */
@@ -722,6 +721,7 @@ int git_odb__add_default_backends(
 		loose_opts.flags |= GIT_ODB_BACKEND_LOOSE_FSYNC;
 
 	loose_opts.oid_type = db->options.oid_type;
+	pack_opts.oid_type = db->options.oid_type;
 
 	/* add the loose object backend */
 	if (git_odb__backend_loose(&loose, objects_dir, &loose_opts) < 0 ||
@@ -729,15 +729,25 @@ int git_odb__add_default_backends(
 		return -1;
 
 	/* add the packed file backend */
-	if (git_odb_backend_pack(&packed, objects_dir) < 0 ||
-		add_backend_internal(db, packed, git_odb__packed_priority, as_alternates, inode) < 0)
+#ifdef GIT_EXPERIMENTAL_SHA256
+	if (git_odb_backend_pack(&packed, objects_dir, &pack_opts) < 0)
+		return -1;
+#else
+	GIT_UNUSED(pack_opts);
+
+	if (git_odb_backend_pack(&packed, objects_dir) < 0)
+		return -1;
+#endif
+
+	if (add_backend_internal(db, packed, git_odb__packed_priority, as_alternates, inode) < 0)
 		return -1;
 
 	if (git_mutex_lock(&db->lock) < 0) {
 		git_error_set(GIT_ERROR_ODB, "failed to acquire the odb lock");
 		return -1;
 	}
-	if (!db->cgraph && git_commit_graph_new(&db->cgraph, objects_dir, false) < 0) {
+	if (!db->cgraph &&
+	    git_commit_graph_new(&db->cgraph, objects_dir, false, db->options.oid_type) < 0) {
 		git_mutex_unlock(&db->lock);
 		return -1;
 	}
@@ -778,12 +788,8 @@ static int load_alternates(git_odb *odb, const char *objects_dir, int alternate_
 		if (*alternate == '\0' || *alternate == '#')
 			continue;
 
-		/*
-		 * Relative path: build based on the current `objects`
-		 * folder. However, relative paths are only allowed in
-		 * the current repository.
-		 */
-		if (*alternate == '.' && !alternate_depth) {
+		/* Relative path: build based on the current `objects` folder. */
+		if (*alternate == '.') {
 			if ((result = git_str_joinpath(&alternates_path, objects_dir, alternate)) < 0)
 				break;
 			alternate = git_str_cstr(&alternates_path);
@@ -821,7 +827,7 @@ int git_odb_set_commit_graph(git_odb *odb, git_commit_graph *cgraph)
 	return error;
 }
 
-int git_odb__open(
+int git_odb_open_ext(
 	git_odb **out,
 	const char *objects_dir,
 	const git_odb_options *opts)
@@ -830,10 +836,11 @@ int git_odb__open(
 
 	GIT_ASSERT_ARG(out);
 	GIT_ASSERT_ARG(objects_dir);
+	GIT_ERROR_CHECK_VERSION(opts, GIT_ODB_OPTIONS_VERSION, "git_odb_options");
 
 	*out = NULL;
 
-	if (git_odb__new(&db, opts) < 0)
+	if (git_odb_new_ext(&db, opts) < 0)
 		return -1;
 
 	if (git_odb__add_default_backends(db, objects_dir, 0, 0) < 0) {
@@ -843,6 +850,11 @@ int git_odb__open(
 
 	*out = db;
 	return 0;
+}
+
+int git_odb_open(git_odb **out, const char *objects_dir)
+{
+	return git_odb_open_ext(out, objects_dir, NULL);
 }
 
 int git_odb__set_caps(git_odb *odb, int caps)
@@ -884,7 +896,7 @@ static void odb_free(git_odb *db)
 		git_mutex_unlock(&db->lock);
 
 	git_commit_graph_free(db->cgraph);
-	git_vector_free(&db->backends);
+	git_vector_dispose(&db->backends);
 	git_cache_dispose(&db->own_cache);
 	git_mutex_free(&db->lock);
 
@@ -1463,11 +1475,16 @@ static int read_prefix_1(git_odb_object **out, git_odb *db,
 
 			if (found && git_oid__cmp(&full_oid, &found_full_oid)) {
 				git_str buf = GIT_STR_INIT;
+				const char *idstr;
 
-				git_str_printf(&buf, "multiple matches for prefix: %s",
-					git_oid_tostr_s(&full_oid));
-				git_str_printf(&buf, " %s",
-					git_oid_tostr_s(&found_full_oid));
+				if ((idstr = git_oid_tostr_s(&full_oid)) == NULL) {
+					git_str_puts(&buf, "failed to parse object id");
+				} else {
+					git_str_printf(&buf, "multiple matches for prefix: %s", idstr);
+
+					if ((idstr = git_oid_tostr_s(&found_full_oid)) != NULL)
+						git_str_printf(&buf, " %s", idstr);
+				}
 
 				error = git_odb__error_ambiguous(buf.ptr);
 				git_str_dispose(&buf);
@@ -1573,7 +1590,7 @@ int git_odb_foreach(git_odb *db, git_odb_foreach_cb cb, void *payload)
 	}
 
 cleanup:
-	git_vector_free(&backends);
+	git_vector_dispose(&backends);
 
 	return error;
 }
@@ -1693,7 +1710,9 @@ int git_odb_open_wstream(
 	    (error = hash_header(ctx, size, type)) < 0)
 		goto done;
 
+#ifdef GIT_EXPERIMENTAL_SHA256
 	(*stream)->oid_type = db->options.oid_type;
+#endif
 	(*stream)->hash_ctx = ctx;
 	(*stream)->declared_size = size;
 	(*stream)->received_bytes = 0;
@@ -1758,7 +1777,8 @@ void git_odb_stream_free(git_odb_stream *stream)
 	if (stream == NULL)
 		return;
 
-	git_hash_ctx_cleanup(stream->hash_ctx);
+	if (stream->hash_ctx)
+		git_hash_ctx_cleanup(stream->hash_ctx);
 	git__free(stream->hash_ctx);
 	stream->free(stream);
 }
@@ -1884,7 +1904,7 @@ void git_odb_backend_data_free(git_odb_backend *backend, void *data)
 	git__free(data);
 }
 
-int git_odb_refresh(struct git_odb *db)
+int git_odb_refresh(git_odb *db)
 {
 	size_t i;
 	int error;
