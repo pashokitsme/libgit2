@@ -12,6 +12,10 @@
 
 #include "map.h"
 #include "vector.h"
+#include "hashmap_str.h"
+
+GIT_HASHMAP_STR_STRUCT(git_mwindow_packmap, struct git_pack_file *);
+GIT_HASHMAP_STR_PROTOTYPES(git_mwindow_packmap, struct git_pack_file *);
 
 typedef struct git_mwindow {
 	struct git_mwindow *next;
@@ -48,7 +52,10 @@ void git_mwindow_close(git_mwindow **w_cursor);
 extern int git_mwindow_global_init(void);
 
 struct git_pack_file; /* just declaration to avoid cyclical includes */
-int git_mwindow_get_pack(struct git_pack_file **out, const char *path);
+int git_mwindow_get_pack(
+	struct git_pack_file **out,
+	const char *path,
+	git_oid_t oid_type);
 int git_mwindow_put_pack(struct git_pack_file *pack);
 
 #endif

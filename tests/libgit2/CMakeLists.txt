@@ -1,5 +1,9 @@
 # tests: the unit and integration tests for libgit2
 
+if(NOT "${CMAKE_VERSION}" VERSION_LESS 3.27)
+	cmake_policy(SET CMP0148 OLD)
+endif()
+
 set(Python_ADDITIONAL_VERSIONS 3 2.7)
 find_package(PythonInterp)
 
@@ -40,9 +44,7 @@ set_source_files_properties(
 
 add_executable(libgit2_tests ${SRC_CLAR} ${SRC_TEST} ${LIBGIT2_OBJECTS})
 
-set_target_properties(libgit2_tests PROPERTIES C_STANDARD 90)
 set_target_properties(libgit2_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
-
 target_include_directories(libgit2_tests PRIVATE ${TEST_INCLUDES} ${LIBGIT2_INCLUDES} ${LIBGIT2_DEPENDENCY_INCLUDES})
 target_include_directories(libgit2_tests SYSTEM PRIVATE ${LIBGIT2_SYSTEM_INCLUDES})
 target_link_libraries(libgit2_tests ${LIBGIT2_SYSTEM_LIBS})
@@ -65,11 +67,12 @@ endif()
 
 include(AddClarTest)
 add_clar_test(libgit2_tests offline             -v -xonline)
-add_clar_test(libgit2_tests invasive            -v -sfilter::stream::bigfile -sodb::largefiles -siterator::workdir::filesystem_gunk -srepo::init -srepo::init::at_filesystem_root)
-add_clar_test(libgit2_tests online              -v -sonline -xonline::customcert -xonline::clone::ssh_auth_methods)
+add_clar_test(libgit2_tests invasive            -v -sfilter::stream::bigfile -sodb::largefiles -siterator::workdir::filesystem_gunk -srepo::init -srepo::init::at_filesystem_root -sonline::clone::connect_timeout_default)
+add_clar_test(libgit2_tests online              -v -sonline -xonline::customcert)
 add_clar_test(libgit2_tests online_customcert   -v -sonline::customcert)
 add_clar_test(libgit2_tests gitdaemon           -v -sonline::push)
 add_clar_test(libgit2_tests gitdaemon_namespace -v -sonline::clone::namespace)
+add_clar_test(libgit2_tests gitdaemon_sha256    -v -sonline::clone::sha256)
 add_clar_test(libgit2_tests ssh                 -v -sonline::push -sonline::clone::ssh_cert -sonline::clone::ssh_with_paths -sonline::clone::path_whitespace_ssh -sonline::clone::ssh_auth_methods)
 add_clar_test(libgit2_tests proxy               -v -sonline::clone::proxy)
 add_clar_test(libgit2_tests auth_clone          -v -sonline::clone::cred)

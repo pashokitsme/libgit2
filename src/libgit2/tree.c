@@ -21,6 +21,8 @@
 #define TREE_ENTRY_CHECK_NAMELEN(n) \
 	if (n > UINT16_MAX) { git_error_set(GIT_ERROR_INVALID, "tree entry path too long"); }
 
+GIT_HASHMAP_STR_FUNCTIONS(git_treebuilder_entrymap, GIT_HASHMAP_INLINE, git_tree_entry *);
+
 static bool valid_filemode(const int filemode)
 {
 	return (filemode == GIT_FILEMODE_TREE
@@ -85,11 +87,17 @@ static git_tree_entry *alloc_entry(const char *filename, size_t filename_len, co
 	char *filename_ptr;
 	size_t tree_len;
 
+#ifdef GIT_EXPERIMENTAL_SHA256
+	size_t oid_size = git_oid_size(id->type);
+#else
+	size_t oid_size = GIT_OID_SHA1_SIZE;
+#endif
+
 	TREE_ENTRY_CHECK_NAMELEN(filename_len);
 
 	if (GIT_ADD_SIZET_OVERFLOW(&tree_len, sizeof(git_tree_entry), filename_len) ||
 	    GIT_ADD_SIZET_OVERFLOW(&tree_len, tree_len, 1) ||
-	    GIT_ADD_SIZET_OVERFLOW(&tree_len, tree_len, GIT_OID_SHA1_SIZE))
+	    GIT_ADD_SIZET_OVERFLOW(&tree_len, tree_len, oid_size))
 		return NULL;
 
 	entry = git__calloc(1, tree_len);
@@ -341,7 +349,7 @@ size_t git_treebuilder_entrycount(git_treebuilder *bld)
 {
 	GIT_ASSERT_ARG_WITH_RETVAL(bld, 0);
 
-	return git_strmap_size(bld->map);
+	return git_treebuilder_entrymap_size(&bld->map);
 }
 
 GIT_INLINE(void) set_error(const char *str, const char *path)
@@ -375,7 +383,7 @@ static int parse_mode(uint16_t *mode_out, const char *buffer, size_t buffer_len,
 	if ((error = git__strntol32(&mode, buffer, buffer_len, buffer_out, 8)) < 0)
 		return error;
 
-	if (mode < 0 || mode > UINT16_MAX)
+	if (mode < 0 || (uint32_t)mode > UINT16_MAX)
 		return -1;
 
 	*mode_out = mode;
@@ -383,11 +391,12 @@ static int parse_mode(uint16_t *mode_out, const char *buffer, size_t buffer_len,
 	return 0;
 }
 
-int git_tree__parse_raw(void *_tree, const char *data, size_t size)
+int git_tree__parse_raw(void *_tree, const char *data, size_t size, git_oid_t oid_type)
 {
 	git_tree *tree = _tree;
 	const char *buffer;
 	const char *buffer_end;
+	const long oid_size = (long)git_oid_size(oid_type);
 
 	buffer = data;
 	buffer_end = buffer + size;
@@ -414,35 +423,33 @@ int git_tree__parse_raw(void *_tree, const char *data, size_t size)
 		if ((filename_len = nul - buffer) == 0 || filename_len > UINT16_MAX)
 			return tree_parse_error("failed to parse tree: can't parse filename", NULL);
 
-		if ((buffer_end - (nul + 1)) < GIT_OID_SHA1_SIZE)
+		if ((buffer_end - (nul + 1)) < (long)oid_size)
 			return tree_parse_error("failed to parse tree: can't parse OID", NULL);
 
 		/* Allocate the entry */
-		{
-			entry = git_array_alloc(tree->entries);
-			GIT_ERROR_CHECK_ALLOC(entry);
+		entry = git_array_alloc(tree->entries);
+		GIT_ERROR_CHECK_ALLOC(entry);
 
-			entry->attr = attr;
-			entry->filename_len = (uint16_t)filename_len;
-			entry->filename = buffer;
-			git_oid__fromraw(&entry->oid, ((unsigned char *) buffer + filename_len + 1), GIT_OID_SHA1);
-		}
-
+		entry->attr = attr;
+		entry->filename_len = (uint16_t)filename_len;
+		entry->filename = buffer;
 		buffer += filename_len + 1;
-		buffer += GIT_OID_SHA1_SIZE;
+
+		git_oid__fromraw(&entry->oid, (unsigned char *)buffer, oid_type);
+		buffer += oid_size;
 	}
 
 	return 0;
 }
 
-int git_tree__parse(void *_tree, git_odb_object *odb_obj)
+int git_tree__parse(void *_tree, git_odb_object *odb_obj, git_oid_t oid_type)
 {
 	git_tree *tree = _tree;
 	const char *data = git_odb_object_data(odb_obj);
 	size_t size = git_odb_object_size(odb_obj);
 	int error;
 
-	if ((error = git_tree__parse_raw(tree, data, size)) < 0 ||
+	if ((error = git_tree__parse_raw(tree, data, size, oid_type)) < 0 ||
 	    (error = git_odb_object_dup(&tree->odb_obj, odb_obj)) < 0)
 		return error;
 
@@ -506,10 +513,13 @@ static int git_treebuilder__write_with_buffer(
 	git_odb *odb;
 	git_tree_entry *entry;
 	git_vector entries = GIT_VECTOR_INIT;
+	size_t oid_size = git_oid_size(bld->repo->oid_type);
+	git_hashmap_iter_t iter = GIT_HASHMAP_ITER_INIT;
 
 	git_str_clear(buf);
 
-	entrycount = git_strmap_size(bld->map);
+	entrycount = git_treebuilder_entrymap_size(&bld->map);
+
 	if ((error = git_vector_init(&entries, entrycount, entry_sort_cmp)) < 0)
 		goto out;
 
@@ -517,10 +527,10 @@ static int git_treebuilder__write_with_buffer(
 	    (error = git_str_grow(buf, entrycount * 72)) < 0)
 		goto out;
 
-	git_strmap_foreach_value(bld->map, entry, {
+	while (git_treebuilder_entrymap_iterate(&iter, NULL, &entry, &bld->map) == 0) {
 		if ((error = git_vector_insert(&entries, entry)) < 0)
 			goto out;
-	});
+	}
 
 	git_vector_sort(&entries);
 
@@ -529,7 +539,7 @@ static int git_treebuilder__write_with_buffer(
 
 		git_str_printf(buf, "%o ", entry->attr);
 		git_str_put(buf, entry->filename, entry->filename_len + 1);
-		git_str_put(buf, (char *)entry->oid.id, GIT_OID_SHA1_SIZE);
+		git_str_put(buf, (char *)entry->oid.id, oid_size);
 
 		if (git_str_oom(buf)) {
 			error = -1;
@@ -541,7 +551,7 @@ static int git_treebuilder__write_with_buffer(
 		error = git_odb_write(oid, odb, buf->ptr, buf->size, GIT_OBJECT_TREE);
 
 out:
-	git_vector_free(&entries);
+	git_vector_dispose(&entries);
 
 	return error;
 }
@@ -564,7 +574,7 @@ static int append_entry(
 
 	entry->attr = (uint16_t)filemode;
 
-	if ((error = git_strmap_set(bld->map, entry->filename, entry)) < 0) {
+	if ((error = git_treebuilder_entrymap_put(&bld->map, entry->filename, entry)) < 0) {
 		git_tree_entry_free(entry);
 		git_error_set(GIT_ERROR_TREE, "failed to append entry %s to the tree builder", filename);
 		return -1;
@@ -725,7 +735,7 @@ int git_tree__write_index(
 		return ret;
 
 	/* Read the tree cache into the index */
-	ret = git_tree_cache_read_tree(&index->tree, tree, &index->tree_pool);
+	ret = git_tree_cache_read_tree(&index->tree, tree, index->oid_type, &index->tree_pool);
 	git_tree_free(tree);
 
 	return ret;
@@ -746,11 +756,6 @@ int git_treebuilder_new(
 	GIT_ERROR_CHECK_ALLOC(bld);
 
 	bld->repo = repo;
-
-	if (git_strmap_new(&bld->map) < 0) {
-		git__free(bld);
-		return -1;
-	}
 
 	if (source != NULL) {
 		git_tree_entry *entry_src;
@@ -790,13 +795,13 @@ int git_treebuilder_insert(
 	if ((error = check_entry(bld->repo, filename, id, filemode)) < 0)
 		return error;
 
-	if ((entry = git_strmap_get(bld->map, filename)) != NULL) {
+	if (git_treebuilder_entrymap_get(&entry, &bld->map, filename) == 0) {
 		git_oid_cpy(&entry->oid, id);
 	} else {
 		entry = alloc_entry(filename, strlen(filename), id);
 		GIT_ERROR_CHECK_ALLOC(entry);
 
-		if ((error = git_strmap_set(bld->map, entry->filename, entry)) < 0) {
+		if (git_treebuilder_entrymap_put(&bld->map, entry->filename, entry) < 0) {
 			git_tree_entry_free(entry);
 			git_error_set(GIT_ERROR_TREE, "failed to insert %s", filename);
 			return -1;
@@ -813,10 +818,15 @@ int git_treebuilder_insert(
 
 static git_tree_entry *treebuilder_get(git_treebuilder *bld, const char *filename)
 {
+	git_tree_entry *entry;
+
 	GIT_ASSERT_ARG_WITH_RETVAL(bld, NULL);
 	GIT_ASSERT_ARG_WITH_RETVAL(filename, NULL);
 
-	return git_strmap_get(bld->map, filename);
+	if (git_treebuilder_entrymap_get(&entry, &bld->map, filename) != 0)
+		return NULL;
+
+	return entry;
 }
 
 const git_tree_entry *git_treebuilder_get(git_treebuilder *bld, const char *filename)
@@ -831,7 +841,7 @@ int git_treebuilder_remove(git_treebuilder *bld, const char *filename)
 	if (entry == NULL)
 		return tree_error("failed to remove entry: file isn't in the tree", filename);
 
-	git_strmap_delete(bld->map, filename);
+	git_treebuilder_entrymap_remove(&bld->map, filename);
 	git_tree_entry_free(entry);
 
 	return 0;
@@ -852,16 +862,17 @@ int git_treebuilder_filter(
 {
 	const char *filename;
 	git_tree_entry *entry;
+	git_hashmap_iter_t iter = GIT_HASHMAP_ITER_INIT;
 
 	GIT_ASSERT_ARG(bld);
 	GIT_ASSERT_ARG(filter);
 
-	git_strmap_foreach(bld->map, filename, entry, {
-			if (filter(entry, payload)) {
-				git_strmap_delete(bld->map, filename);
-				git_tree_entry_free(entry);
-			}
-	});
+	while (git_treebuilder_entrymap_iterate(&iter, &filename, &entry, &bld->map) == 0) {
+		if (filter(entry, payload)) {
+			git_treebuilder_entrymap_remove(&bld->map, filename);
+			git_tree_entry_free(entry);
+		}
+	}
 
 	return 0;
 }
@@ -869,11 +880,14 @@ int git_treebuilder_filter(
 int git_treebuilder_clear(git_treebuilder *bld)
 {
 	git_tree_entry *e;
+	git_hashmap_iter_t iter = GIT_HASHMAP_ITER_INIT;
 
 	GIT_ASSERT_ARG(bld);
 
-	git_strmap_foreach_value(bld->map, e, git_tree_entry_free(e));
-	git_strmap_clear(bld->map);
+	while (git_treebuilder_entrymap_iterate(&iter, NULL, &e, &bld->map) == 0)
+		git_tree_entry_free(e);
+
+	git_treebuilder_entrymap_clear(&bld->map);
 
 	return 0;
 }
@@ -885,7 +899,7 @@ void git_treebuilder_free(git_treebuilder *bld)
 
 	git_str_dispose(&bld->write_cache);
 	git_treebuilder_clear(bld);
-	git_strmap_free(bld->map);
+	git_treebuilder_entrymap_dispose(&bld->map);
 	git__free(bld);
 }
 
@@ -1306,7 +1320,7 @@ cleanup:
 
 	git_str_dispose(&component);
 	git_array_clear(stack);
-	git_vector_free(&entries);
+	git_vector_dispose(&entries);
 	return error;
 }
 
